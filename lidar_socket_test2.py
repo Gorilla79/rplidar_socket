@@ -1,57 +1,43 @@
 import socket
-import numpy as np
 import threading
-from rplidar import RPLidar
+import numpy as np
 import zlib
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtGui
 
-# RPLidar Configuration
-PORT_NAME = '/dev/rplidar'  # Replace with the actual device path
-BAUDRATE = 115200
+HOST = '0.0.0.0'
+PORT = 5001
 
-# UDP Configuration
-SERVER_IP = '192.168.0.6'  # Replace with the Windows server's IP address
-SERVER_PORT = 5001           # UDP port number
+def unpack_lidar_data(data):
+    decompressed_data = zlib.decompress(data)
+    arr = np.frombuffer(decompressed_data, dtype=np.float32).reshape(-1, 2)
+    return arr[:, 0], arr[:, 1]
 
-def compress_lidar_data(scan):
-    """
-    Compress LiDAR data into a binary format.
-    Args:
-        scan: List of (quality, angle, distance) tuples.
-    Returns:
-        Compressed binary data.
-    """
-    data = np.array([[angle, distance] for _, angle, distance in scan], dtype=np.float32)
-    return zlib.compress(data.tobytes())
+def run_server():
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_socket.bind((HOST, PORT))
+    print(f"Server listening on {HOST}:{PORT}")
 
-def send_lidar_data():
-    """
-    Operate RPLidar, send data over UDP, and ensure proper shutdown on exit.
-    """
-    # Initialize RPLidar
-    lidar = RPLidar(PORT_NAME, baudrate=BAUDRATE)
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_address = (SERVER_IP, SERVER_PORT)
+    app = QtGui.QApplication([])
+    win = pg.GraphicsLayoutWidget()
+    plot = win.addPlot()
+    scatter = pg.ScatterPlotItem(size=1)
+    plot.addItem(scatter)
+    win.show()
 
-    print("RPLidar connected. Sending data to server...")
-    try:
-        # Iterate over LiDAR scans and send data
-        for scan in lidar.iter_scans():
-            compressed_data = compress_lidar_data(scan)
-            client_socket.sendto(compressed_data, server_address)
-            print(f"Sent {len(compressed_data)} bytes to {SERVER_IP}:{SERVER_PORT}")
-    except KeyboardInterrupt:
-        # Handle user interruption (Ctrl+C)
-        print("\nOperation interrupted by user.")
-    except Exception as e:
-        # Handle other exceptions
-        print(f"An error occurred: {e}")
-    finally:
-        # Stop the LiDAR and close the socket
-        print("Shutting down RPLidar and closing socket...")
-        lidar.stop()
-        lidar.disconnect()
-        client_socket.close()
-        print("Shutdown complete.")
+    def update_plot(x, y):
+        scatter.setData(x, y)
+
+    def receive_loop():
+        while True:
+            data, addr = server_socket.recvfrom(65536)
+            angles, distances = unpack_lidar_data(data)
+            x = distances * np.cos(np.radians(angles))
+            y = distances * np.sin(np.radians(angles))
+            update_plot(x, y)
+
+    threading.Thread(target=receive_loop, daemon=True).start()
+    app.exec_()
 
 if __name__ == "__main__":
-    send_lidar_data()
+    run_server()

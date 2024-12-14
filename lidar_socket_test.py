@@ -1,50 +1,64 @@
 import socket
-from rplidar import RPLidar
 import struct
-
-# RPLidar Configuration
-PORT_NAME = '/dev/rplidar'  # RPLidar device path
-BAUDRATE = 115200
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+import numpy as np
 
 # UDP Configuration
-SERVER_IP = '192.168.0.6'  # Replace with Windows server IP
-SERVER_PORT = 5001           # Port number (UDP)
+HOST = '0.0.0.0'  # Listen on all interfaces
+PORT = 5001       # Port number (UDP)
 
-def compress_lidar_data(scan):
+def unpack_lidar_data(data):
     """
-    Compress LiDAR data into a format suitable for UDP transmission.
+    Decompress received LiDAR data.
     Args:
-        scan: (quality, angle, distance) list of tuples.
+        data: Compressed byte data.
     Returns:
-        Compressed byte data.
+        (angles, distances): Lists of angles and distances.
     """
-    # Extract only angle and distance, ignoring quality
-    compressed_data = struct.pack(
-        f"{len(scan) * 2}f",
-        *(value for pair in ((angle, distance) for _, angle, distance in scan) for value in pair)
-    )
-    return compressed_data
+    num_points = len(data) // 4 // 2  # 2 floats (angle, distance) per point
+    unpacked_data = struct.unpack(f"{num_points * 2}f", data)
+    angles = unpacked_data[::2]  # Extract every second float as angle
+    distances = unpacked_data[1::2]  # Extract every second float as distance
+    return angles, distances
 
-def send_lidar_data():
-    """Send LiDAR data via UDP."""
-    lidar = RPLidar(PORT_NAME, baudrate=BAUDRATE)
-    print("RPLidar connected.")
+def run_server():
+    """Receive and visualize LiDAR data over UDP."""
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_socket.bind((HOST, PORT))
+    print(f"Server listening on {HOST}:{PORT}")
 
-    # Create UDP socket
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server_address = (SERVER_IP, SERVER_PORT)
+    # Matplotlib setup
+    fig, ax = plt.subplots()
+    sc = ax.scatter([], [], s=1)  # Point size
+    ax.set_xlim(-10, 10)
+    ax.set_ylim(-10, 10)
 
-    try:
-        for scan in lidar.iter_scans():
-            compressed_data = compress_lidar_data(scan)
-            client_socket.sendto(compressed_data, server_address)
-    except KeyboardInterrupt:
-        print("Operation interrupted.")
-    finally:
-        lidar.stop()
-        lidar.disconnect()
-        client_socket.close()
-        print("LiDAR and socket connection closed.")
-        
+    def update(frame):
+        try:
+            data, addr = server_socket.recvfrom(8192)  # Increase buffer size to 8KB
+            if data:
+                print(f"Received data from {addr}, size: {len(data)}")
+            else:
+                print("No data received.")
+                return
+
+            # Unpack and process the data
+            angles, distances = unpack_lidar_data(data)
+            print(f"Angles: {angles[:5]} Distances: {distances[:5]}")  # Print first 5 values
+            
+            if len(angles) > 0 and len(distances) > 0:
+                # Convert polar to Cartesian coordinates
+                x = distances * np.cos(np.radians(angles))
+                y = distances * np.sin(np.radians(angles))
+                sc.set_offsets(np.c_[x, y])
+            else:
+                print("No valid data to visualize.")
+        except Exception as e:
+            print(f"Error in update function: {e}")
+
+    ani = FuncAnimation(fig, update, interval=100)
+    plt.show()
+
 if __name__ == "__main__":
-    send_lidar_data()
+    run_server()
